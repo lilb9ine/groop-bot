@@ -10,7 +10,7 @@ from telegram.ext import (
     filters
 )
 
-BOT_TOKEN = "7788167620:AAFFHyGKTp4PJL0_cav_jnesdm2mOlvSGpc"
+BOT_TOKEN = "7589267392:AAFSu-tjVlJ7u2Zj8bpkITKM3WM3aa5nJ_s"
 ADMIN_ID = 6027059388
 DAILY_LIMIT = 10
 
