@@ -1,5 +1,7 @@
 import json
 import datetime
+import os
+from supabase import create_client, Client  # ✅ Supabase
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,7 +12,12 @@ from telegram.ext import (
     filters
 )
 
-BOT_TOKEN = "7589267392:AAFSu-tjVlJ7u2Zj8bpkITKM3WM3aa5nJ_s"
+# ✅ Supabase setup
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+BOT_TOKEN = os.getenv("7589267392:AAFSu-tjVlJ7u2Zj8bpkITKM3WM3aa5nJ_s")
 ADMIN_ID = 6027059388
 DAILY_LIMIT = 30
 
