@@ -1,7 +1,14 @@
 import json
 import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters
+)
 
 BOT_TOKEN = "7788167620:AAFFHyGKTp4PJL0_cav_jnesdm2mOlvSGpc"
 ADMIN_ID = 6027059388
@@ -63,8 +70,7 @@ async def stories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No stories added yet.")
         return
 
-    keyboard = [[InlineKeyboardButton(f"{story['title']} ({story['category']})", callback_data=f"read_{i}")]
-                for i, story in enumerate(stories)]
+    keyboard = [[InlineKeyboardButton(f"{story['title']} ({story['category']})", callback_data=f"read_{i}")] for i, story in enumerate(stories)]
     await update.message.reply_text("📚 Choose a story:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # /category <name>
@@ -80,7 +86,7 @@ async def category_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No stories in that category.")
         return
 
-    keyboard = [[InlineKeyboardButton(story["title"], callback_data=f"read_{i}")] for i, story in matching]
+    keyboard = [[InlineKeyboardButton(story[1]["title"], callback_data=f"read_{story[0]}")] for story in matching]
     await update.message.reply_text(f"📚 Stories in '{category.title()}':", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # /categories
@@ -152,9 +158,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("read_"):
         story_index = int(data.split("_")[1])
+        story = stories[story_index]
+        buttons = [
+            [InlineKeyboardButton(f"Episode {i+1}", callback_data=f"episode_{story_index}_{i}")]
+            for i in range(len(story["episodes"]))
+        ]
+        await query.message.reply_text(
+            f"📖 {story['title']}\nChoose an episode:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data.startswith("episode_"):
+        _, story_idx, ep_idx = data.split("_")
+        story_idx = int(story_idx)
+        ep_idx = int(ep_idx)
+
         user_progress[user_id] = {
-            "story": story_index,
-            "episode": 0,
+            "story": story_idx,
+            "episode": ep_idx,
             "count": 0,
             "date": datetime.date.today().isoformat()
         }
@@ -254,7 +275,12 @@ async def addstory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("⚠ Format: /addstory Title: X | Category: Y | Episodes: ep1 || ep2")
 
+# 🆕 Catch non-command messages
+async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Please use a valid command like /start or /stories.")
+
 # Start bot
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -269,6 +295,9 @@ def main():
     app.add_handler(CommandHandler("addstory", addstory))
     app.add_handler(CommandHandler("reactions", reactions_command))
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # 🆕 Catch random messages
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
     print("🤖 Bot is running...")
     app.run_polling()
