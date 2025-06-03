@@ -1,83 +1,77 @@
-import json
-import datetime
 import os
-from supabase import create_client, Client
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
     CallbackQueryHandler,
-    MessageHandler,
-    filters
 )
+from supabase import create_client, Client
 
-# ✅ Load secrets from environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+# Get secrets from environment variables (set on Render)
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# ✅ Supabase client
+# Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-DAILY_LIMIT = 30
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Load stories from local fallback (still used for now)
-try:
-    with open("stories.json", "r") as f:
-        stories = json.load(f)
-except FileNotFoundError:
-    stories = []
+# Command: /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📚 Browse Stories", callback_data="browse")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Welcome to the Story Bot!", reply_markup=reply_markup)
 
-try:
-    with open("user_progress.json", "r") as f:
-        user_progress = json.load(f)
-except FileNotFoundError:
-    user_progress = {}
+# Handle button clicks
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-try:
-    with open("reactions.json", "r") as f:
-        reactions = json.load(f)
-except FileNotFoundError:
-    reactions = {}
+    if data == "browse":
+        # Show list of story categories
+        stories = supabase.table("stories").select("*").execute().data
+        if not stories:
+            await query.edit_message_text("No stories available yet.")
+            return
+        buttons = []
+        for story in stories:
+            buttons.append([InlineKeyboardButton(story["title"], callback_data=f"story_{story['id']}")])
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_text("Choose a story:", reply_markup=reply_markup)
 
-def save_stories():
-    with open("stories.json", "w") as f:
-        json.dump(stories, f)
+    elif data.startswith("story_"):
+        story_id = int(data.split("_")[1])
+        story = supabase.table("stories").select("*").eq("id", story_id).single().execute().data
+        if story:
+            episodes = story["episodes"]
+            if episodes:
+                await query.edit_message_text(f"*{story['title']} - Episode 1:*\n\n{episodes[0]}", parse_mode="Markdown")
+            else:
+                await query.edit_message_text("This story has no episodes yet.")
+        else:
+            await query.edit_message_text("Story not found.")
 
-def save_user_progress():
-    with open("user_progress.json", "w") as f:
-        json.dump(user_progress, f)
-
-def save_reactions():
-    with open("reactions.json", "w") as f:
-        json.dump(reactions, f)
-
-# Bot commands and handlers go here (like /start, /addstory, /read, etc)
-# ... (unchanged logic from your full working bot)
-# You can paste back the command handler functions here
-
-# Example of main setup
-
+# Start the bot
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stories", stories_command))
-    app.add_handler(CommandHandler("read", read_command))
-    app.add_handler(CommandHandler("continue", continue_command))
-    app.add_handler(CommandHandler("myprogress", myprogress))
-    app.add_handler(CommandHandler("categories", categories_command))
-    app.add_handler(CommandHandler("category", category_command))
-    app.add_handler(CommandHandler("reactions", reactions_command))
-    app.add_handler(CommandHandler("addstory", addstory))
-    app.add_handler(CommandHandler("deleteepisode", delete_episode))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
+    app.add_handler(CallbackQueryHandler(handle_buttons))
 
-    print("🤖 Bot is running...")
+    print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
