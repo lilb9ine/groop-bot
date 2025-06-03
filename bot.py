@@ -1,181 +1,129 @@
-import os
-import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-    CallbackQueryHandler,
-)
-from supabase import create_client, Client
 import json
+import logging
+import os
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ContextTypes, MessageHandler, filters
+)
 
-# Set up logging
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))  # replace with your Telegram user ID if needed
+DATA_FILE = "stories.json"
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-ADMIN_IDS = os.environ.get("ADMIN_IDS", "")  # Comma-separated admin Telegram IDs
-ADMIN_IDS = [int(admin.strip()) for admin in ADMIN_IDS.split(",") if admin.strip().isdigit()]
 
-# Connect to Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return []
 
-# State tracking for users uploading stories
-user_states = {}
 
-# Helper function to fetch stories
-def get_all_stories():
-    response = supabase.table("stories").select("*").execute()
-    return response.data or []
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-# Start command
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to StoryBot!\nUse /categories to view story categories.")
+    await update.message.reply_text("Welcome! Use /categories to browse stories.")
 
-# Categories command
+
 async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stories = get_all_stories()
-    categories = sorted(set(story["category"] for story in stories))
+    data = load_data()
+    categories = sorted(set(story["category"] for story in data))
     if not categories:
-        await update.message.reply_text("No categories available.")
+        await update.message.reply_text("No stories available.")
         return
+    keyboard = [
+        [InlineKeyboardButton(cat, callback_data=f"cat:{cat}")]
+        for cat in categories
+    ]
+    await update.message.reply_text("Choose a category:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    buttons = [[InlineKeyboardButton(cat, callback_data=f"category:{cat}")] for cat in categories]
-    await update.message.reply_text("Choose a category:", reply_markup=InlineKeyboardMarkup(buttons))
 
-# Show stories by category
-async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    category = query.data.split(":", 1)[1]
-    stories = get_all_stories()
-    filtered = [story for story in stories if story["category"] == category]
+    data = load_data()
 
-    if not filtered:
-        await query.edit_message_text("No stories in this category.")
-        return
+    if query.data.startswith("cat:"):
+        category = query.data[4:]
+        stories = [s for s in data if s["category"] == category]
+        keyboard = [
+            [InlineKeyboardButton(s["title"], callback_data=f"story:{s['id']}:0")]
+            for s in stories
+        ]
+        await query.edit_message_text(f"Stories in '{category}':", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    buttons = [[InlineKeyboardButton(story["title"], callback_data=f"story:{story['id']}")] for story in filtered]
-    await query.edit_message_text(f"Stories in {category}:", reply_markup=InlineKeyboardMarkup(buttons))
-
-# Show story and episode
-async def handle_story_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    story_id = query.data.split(":", 1)[1]
-
-    response = supabase.table("stories").select("*").eq("id", story_id).execute()
-    if not response.data:
-        await query.edit_message_text("Story not found.")
-        return
-
-    story = response.data[0]
-    episodes = json.loads(story["episodes"])
-    if not episodes:
-        await query.edit_message_text("No episodes available for this story.")
-        return
-
-    text = f"📖 *{story['title']}* - Episode 1\n\n{episodes[0]}"
-    buttons = []
-
-    if len(episodes) > 1:
-        buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"next:{story_id}:1"))
-
-    buttons.append(InlineKeyboardButton("❤️ React", callback_data="react"))
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([buttons]))
-
-# Handle next episode
-async def handle_next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    _, story_id, episode_index = query.data.split(":")
-    episode_index = int(episode_index)
-
-    response = supabase.table("stories").select("*").eq("id", story_id).execute()
-    if not response.data:
-        await query.edit_message_text("Story not found.")
-        return
-
-    story = response.data[0]
-    episodes = json.loads(story["episodes"])
-
-    if episode_index >= len(episodes):
-        await query.edit_message_text("No more episodes.")
-        return
-
-    text = f"📖 *{story['title']}* - Episode {episode_index + 1}\n\n{episodes[episode_index]}"
-    buttons = []
-
-    if episode_index + 1 < len(episodes):
-        buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"next:{story_id}:{episode_index + 1}"))
-
-    buttons.append(InlineKeyboardButton("❤️ React", callback_data="react"))
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([buttons]))
-
-# Handle reactions
-async def handle_react_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Thanks for the ❤️!", show_alert=True)
-
-# Upload story (admin only)
-async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("You're not authorized to upload stories.")
-        return
-
-    user_states[user_id] = {"step": 1}
-    await update.message.reply_text("Send the story title:")
-
-async def handle_admin_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_states:
-        return
-
-    state = user_states[user_id]
-    text = update.message.text
-
-    if state["step"] == 1:
-        state["title"] = text
-        state["step"] = 2
-        await update.message.reply_text("Enter the category:")
-    elif state["step"] == 2:
-        state["category"] = text
-        state["step"] = 3
-        await update.message.reply_text("Send the episodes (separated by `||`):")
-    elif state["step"] == 3:
-        episodes = [ep.strip() for ep in text.split("||") if ep.strip()]
-        if not episodes:
-            await update.message.reply_text("Please send at least one episode.")
+    elif query.data.startswith("story:"):
+        _, story_id, ep_idx = query.data.split(":")
+        story = next((s for s in data if s["id"] == story_id), None)
+        if not story:
+            await query.edit_message_text("Story not found.")
             return
-        supabase.table("stories").insert({
-            "title": state["title"],
-            "category": state["category"],
-            "episodes": json.dumps(episodes)
-        }).execute()
-        await update.message.reply_text("✅ Story uploaded successfully!")
-        user_states.pop(user_id)
+        ep_idx = int(ep_idx)
+        total_eps = len(story["episodes"])
+        text = f"*{story['title']}* - Episode {ep_idx + 1}/{total_eps}\n\n{story['episodes'][ep_idx]}"
+        keyboard = []
 
-# Main function
+        if ep_idx > 0:
+            keyboard.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"story:{story_id}:{ep_idx - 1}"))
+        if ep_idx < total_eps - 1:
+            keyboard.append(InlineKeyboardButton("Next ➡️", callback_data=f"story:{story_id}:{ep_idx + 1}"))
+
+        reactions = ["❤️", "😂", "😮", "😢"]
+        reaction_buttons = [InlineKeyboardButton(r, callback_data=f"react:{r}") for r in reactions]
+
+        await query.edit_message_text(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([keyboard, reaction_buttons] if keyboard else [reaction_buttons])
+        )
+
+    elif query.data.startswith("react:"):
+        emoji = query.data.split(":")[1]
+        await query.answer(f"You reacted with {emoji}", show_alert=True)
+
+
+async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("You are not authorized to upload stories.")
+        return
+
+    try:
+        title = context.args[0]
+        category = context.args[1]
+        episode_texts = " ".join(context.args[2:]).split("|||")
+
+        new_story = {
+            "id": str(len(load_data()) + 1),
+            "title": title,
+            "category": category,
+            "episodes": episode_texts
+        }
+
+        data = load_data()
+        data.append(new_story)
+        save_data(data)
+        await update.message.reply_text(f"Story '{title}' uploaded in category '{category}'.")
+    except Exception as e:
+        logger.error(e)
+        await update.message.reply_text("Error uploading story. Format:\n/upload <title> <category> <ep1|||ep2|||ep3>")
+
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("categories", categories))
     app.add_handler(CommandHandler("upload", upload))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_messages))
-    app.add_handler(CallbackQueryHandler(handle_category_callback, pattern="^category:"))
-    app.add_handler(CallbackQueryHandler(handle_story_callback, pattern="^story:"))
-    app.add_handler(CallbackQueryHandler(handle_next_callback, pattern="^next:"))
-    app.add_handler(CallbackQueryHandler(handle_react_callback, pattern="^react$"))
-
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
