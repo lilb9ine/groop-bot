@@ -30,7 +30,10 @@ def save_data(data):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Use /categories to browse stories.")
+    await update.message.reply_text(
+        "📖 Welcome to the Groop Story Bot!\nUse /stories to see stories or /help for all commands."
+    )
+")
 
 
 async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,7 +122,7 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("categories", categories))
+   app.add_handler(CommandHandler("stories", categories))
     app.add_handler(CommandHandler("upload", upload))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling()
