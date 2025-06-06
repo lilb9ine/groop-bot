@@ -1,5 +1,7 @@
+
 import json
 import datetime
+import re  # for keyword search
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -28,12 +30,12 @@ try:
 except FileNotFoundError:
     user_progress = {}
 
-# Load reactions
+# Load bookmarks
 try:
-    with open("reactions.json", "r") as f:
-        reactions = json.load(f)
+    with open("bookmarks.json", "r") as f:
+        bookmarks = json.load(f)
 except FileNotFoundError:
-    reactions = {}
+    bookmarks = {}
 
 def save_stories():
     with open("stories.json", "w") as f:
@@ -43,294 +45,119 @@ def save_user_progress():
     with open("user_progress.json", "w") as f:
         json.dump(user_progress, f)
 
-def save_reactions():
-    with open("reactions.json", "w") as f:
-        json.dump(reactions, f)
+def save_bookmarks():
+    with open("bookmarks.json", "w") as f:
+        json.dump(bookmarks, f)
 
-# /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 Welcome to the Story Bot!\nUse /stories to see stories or /help for all commands."
-    )
-
-# /help
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/start - Welcome message\n"
-        "/help - Show help\n"
-        "/stories - List all stories\n"
-        "/read <number> - Read a story by number\n"
-        "/continue - Continue where you left off\n"
-        "/myprogress - Show your current story/episode\n"
-        "/categories - List all story categories\n"
-        "/category <name> - Show stories in that category\n"
-        "/reactions - View total reactions\n"
-        "/addstory Title: ... | Category: ... | Episodes: ep1 || ep2\n"
-        "/deleteepisode <story_number> <episode_number> (admin only)"
-    )
-
-# /stories
-async def stories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not stories:
-        await update.message.reply_text("❌ No stories added yet.")
-        return
-
-    keyboard = [[InlineKeyboardButton(f"{story['title']} ({story['category']})", callback_data=f"read_{i}")] for i, story in enumerate(stories)]
-    await update.message.reply_text("📚 Choose a story:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# /category <name>
-async def category_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠ Usage: /category <category name>")
-        return
-
-    category = " ".join(context.args).strip().lower()
-    matching = [(i, story) for i, story in enumerate(stories) if story.get("category", "").lower() == category]
-
-    if not matching:
-        await update.message.reply_text("❌ No stories in that category.")
-        return
-
-    keyboard = [[InlineKeyboardButton(story[1]["title"], callback_data=f"read_{story[0]}")] for story in matching]
-    await update.message.reply_text(f"📚 Stories in '{category.title()}':", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# /categories
-async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    all_cats = {story.get("category", "Uncategorized").title() for story in stories}
-    cats = "\n".join(f"• {cat}" for cat in sorted(all_cats))
-    await update.message.reply_text(f"📂 Available Categories:\n{cats}")
-
-# /continue
-async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /bookmark command
+async def bookmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     prog = user_progress.get(user_id)
     if not prog:
-        await update.message.reply_text("👭 You haven't started a story yet. Use /stories.")
+        await update.message.reply_text("❗ You haven't started reading yet.")
         return
-    await send_episode(update.message.chat_id, user_id, context)
 
-# /myprogress
-async def myprogress(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    key = f"{prog['story']}_{prog['episode']}"
+    if user_id not in bookmarks:
+        bookmarks[user_id] = []
+    if key not in bookmarks[user_id]:
+        bookmarks[user_id].append(key)
+        save_bookmarks()
+        await update.message.reply_text("🔖 Episode bookmarked!")
+    else:
+        await update.message.reply_text("✅ Already bookmarked.")
+
+# /bookmarks command
+async def view_bookmarks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    prog = user_progress.get(user_id)
-    if not prog:
-        await update.message.reply_text("👭 You haven't started reading yet.")
-        return
-    story = stories[prog["story"]]
-    episode = prog["episode"] + 1
-    await update.message.reply_text(f"📖 You're on '{story['title']}' - Episode {episode}")
+    user_bm = bookmarks.get(user_id, [])
 
-# /reactions
-async def reactions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not reactions:
-        await update.message.reply_text("👭 No reactions yet.")
+    if not user_bm:
+        await update.message.reply_text("📭 You have no bookmarks yet.")
         return
 
     lines = []
-    for key, counts in reactions.items():
-        story_idx, ep_idx = map(int, key.split("_"))
-        title = stories[story_idx]["title"]
-        heart = counts.get("love", 0)
-        fire = counts.get("fire", 0)
-        lines.append(f"📖 {title} (Ep {ep_idx + 1}): ❤ {heart} 🔥 {fire}")
+    for bm in user_bm:
+        s_idx, e_idx = map(int, bm.split("_"))
+        story = stories[s_idx]
+        title = story["title"]
+        lines.append(f"📘 {title} - Episode {e_idx + 1}")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines))
 
-# /read <number>
-async def read_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        index = int(context.args[0]) - 1
-        if index < 0 or index >= len(stories):
-            raise ValueError
-        user_id = str(update.effective_user.id)
-        user_progress[user_id] = {
-            "story": index,
-            "episode": 0,
-            "count": 0,
-            "date": datetime.date.today().isoformat()
-        }
-        save_user_progress()
-        await send_episode(update.message.chat_id, user_id, context)
-    except:
-        await update.message.reply_text("⚠ Usage: /read <story number>")
-
-# /addstory
-async def addstory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /addstory (admin only)
+async def add_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You're not allowed to add stories.")
+        await update.message.reply_text("❌ Only admin can add stories.")
         return
 
     try:
-        message = update.message.text
-        parts = message.split("Title:")[1].split("|")
-        title = parts[0].strip()
-        category = ""
-        episodes = []
-
-        for part in parts[1:]:
-            if "Category:" in part:
-                category = part.split("Category:")[1].strip()
-            elif "Episodes:" in part:
-                raw_episodes = part.split("Episodes:")[1]
-                episodes = [ep.strip() for ep in raw_episodes.split("||")]
-
-        if not title or not episodes:
-            raise ValueError
-
-        stories.append({
-            "title": title,
-            "category": category,
-            "episodes": episodes
-        })
-
+        title, *episodes = update.message.text.replace("/addstory", "", 1).strip().split("::")
+        story = {"title": title.strip(), "episodes": [ep.strip() for ep in episodes]}
+        stories.append(story)
         save_stories()
+        await update.message.reply_text(f"✅ Story '{title.strip()}' added with {len(episodes)} episodes.")
+    except Exception as e:
+        await update.message.reply_text("❗ Error formatting story. Use: /addstory Title::Episode1::Episode2::...")
 
-        await update.message.reply_text(f"✅ Story '{title}' added with {len(episodes)} episodes.")
-    except:
-        await update.message.reply_text("⚠ Format: /addstory Title: X | Category: Y | Episodes: ep1 || ep2")
+# /readstory
+async def read_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton(story["title"], callback_data=f"read_{i}")]
+        for i, story in enumerate(stories)
+    ]
+    await update.message.reply_text("📚 Choose a story:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# /deleteepisode <story_number> <episode_number>
-async def delete_episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You're not authorized to delete episodes.")
-        return
-
-    try:
-        story_idx = int(context.args[0]) - 1
-        ep_idx = int(context.args[1]) - 1
-
-        if story_idx < 0 or ep_idx < 0:
-            raise ValueError
-
-        if story_idx >= len(stories):
-            await update.message.reply_text("❌ Invalid story number.")
-            return
-
-        if ep_idx >= len(stories[story_idx]["episodes"]):
-            await update.message.reply_text("❌ Invalid episode number.")
-            return
-
-        del stories[story_idx]["episodes"][ep_idx]
-        save_stories()
-
-        await update.message.reply_text(f"✅ Episode {ep_idx+1} deleted from story '{stories[story_idx]['title']}'.")
-    except:
-        await update.message.reply_text("⚠ Usage: /deleteepisode <story_number> <episode_number>")
-
-# Button press
+# Handle story selection
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = str(query.from_user.id)
+
     data = query.data
+    user_id = str(query.from_user.id)
 
     if data.startswith("read_"):
-        story_index = int(data.split("_")[1])
-        story = stories[story_index]
-        buttons = [
-            [InlineKeyboardButton(f"Episode {i+1}", callback_data=f"episode_{story_index}_{i}")]
-            for i in range(len(story["episodes"]))
-        ]
-        await query.message.reply_text(
-            f"📖 {story['title']}\nChoose an episode:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    elif data.startswith("episode_"):
-        _, story_idx, ep_idx = data.split("_")
-        story_idx = int(story_idx)
-        ep_idx = int(ep_idx)
-
-        user_progress[user_id] = {
-            "story": story_idx,
-            "episode": ep_idx,
-            "count": 0,
-            "date": datetime.date.today().isoformat()
-        }
+        story_idx = int(data.split("_")[1])
+        user_progress[user_id] = {"story": story_idx, "episode": 0}
         save_user_progress()
-        await send_episode(query.message.chat_id, user_id, context)
+        episode = stories[story_idx]["episodes"][0]
+        await query.message.reply_text(f"📖 {episode}")
+    elif data.startswith("next"):
+        story_idx = user_progress[user_id]["story"]
+        ep_idx = user_progress[user_id]["episode"] + 1
+        if ep_idx < len(stories[story_idx]["episodes"]):
+            user_progress[user_id]["episode"] = ep_idx
+            save_user_progress()
+            await query.message.reply_text(f"📖 {stories[story_idx]['episodes'][ep_idx]}")
+        else:
+            await query.message.reply_text("🏁 You've finished this story!")
 
-    elif data == "next":
-        prog = user_progress.get(user_id)
-        if not prog:
-            await query.message.reply_text("❗ Use /stories to start reading.")
-            return
+# /continue
+async def continue_reading(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    progress = user_progress.get(user_id)
+    if not progress:
+        await update.message.reply_text("❗ You haven't started any story.")
+        return
 
-        today = datetime.date.today().isoformat()
-        if prog["date"] != today:
-            prog["count"] = 0
-            prog["date"] = today
+    story = stories[progress["story"]]
+    ep_idx = progress["episode"]
+    await update.message.reply_text(f"📖 {story['episodes'][ep_idx]}")
 
-        if prog["count"] >= DAILY_LIMIT:
-            await query.message.reply_text("⛔ You've reached your daily limit. Come back tomorrow!")
-            return
+# Main entry
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Welcome to the Story Bot!\nUse /readstory to begin.")
 
-        prog["episode"] += 1
-        prog["count"] += 1
-        save_user_progress()
-        await send_episode(query.message.chat_id, user_id, context)
-
-    elif data.startswith("react_"):
-        try:
-            _, story_idx, ep_idx, reaction = data.split("_")
-            key = f"{story_idx}_{ep_idx}"
-
-            if key not in reactions:
-                reactions[key] = {"love": 0, "fire": 0}
-
-            if reaction not in reactions[key]:
-                reactions[key][reaction] = 0
-
-            reactions[key][reaction] += 1
-            save_reactions()
-            await query.message.reply_text("✅ Thanks for reacting!")
-        except Exception as e:
-            await query.message.reply_text("⚠️ Failed to process reaction.")
-
-# Send episode
-async def send_episode(chat_id, user_id, context):
-    prog = user_progress[user_id]
-    story = stories[prog["story"]]
-    episodes = story["episodes"]
-    ep_idx = prog["episode"]
-
-    if ep_idx < len(episodes):
-        text = f"📖 {story['title']}\n\n{episodes[ep_idx]}"
-        buttons = [
-            [InlineKeyboardButton("➡ Next Episode", callback_data="next")],
-            [
-                InlineKeyboardButton("❤ Love it", callback_data=f"react_{prog['story']}_{ep_idx}_love"),
-                InlineKeyboardButton("🔥 So intense", callback_data=f"react_{prog['story']}_{ep_idx}_fire")
-            ]
-        ]
-        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await context.bot.send_message(chat_id=chat_id, text="✅ You've reached the end of the story!")
-
-# Unknown command
-async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Please use a valid command like /start or /stories.")
-
-# Run bot
-def main():
+if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stories", stories_command))
-    app.add_handler(CommandHandler("read", read_command))
-    app.add_handler(CommandHandler("continue", continue_command))
-    app.add_handler(CommandHandler("myprogress", myprogress))
-    app.add_handler(CommandHandler("categories", categories_command))
-    app.add_handler(CommandHandler("category", category_command))
-    app.add_handler(CommandHandler("reactions", reactions_command))
-    app.add_handler(CommandHandler("addstory", addstory))
-    app.add_handler(CommandHandler("deleteepisode", delete_episode))
+    app.add_handler(CommandHandler("readstory", read_story))
+    app.add_handler(CommandHandler("continue", continue_reading))
+    app.add_handler(CommandHandler("addstory", add_story))
+    app.add_handler(CommandHandler("bookmark", bookmark))
+    app.add_handler(CommandHandler("bookmarks", view_bookmarks))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
-    print("🤖 Bot is running...")
+    print("Bot is running...")
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
